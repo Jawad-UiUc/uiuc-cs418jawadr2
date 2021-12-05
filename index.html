@@ -28,18 +28,32 @@ in vec3 aVertexPosition;
 in vec3 aVertexNormal;
 in vec2 aTexCoord;
 
+uniform vec3 u_lightWorldPosition;
+uniform vec3 u_viewWorldPosition;
+
 uniform mat4 uModelViewMatrix;
 uniform mat3 uNormalMatrix;
+uniform mat4 uViewMatrix;
 uniform mat4 uProjectionMatrix;
 
-out vec2 vTexCoord;
-out vec3 vNormal;
+out vec3 v_surfaceToLight;
+out vec3 v_surfaceToView;
+out vec3 n,l,v,x;
 
+out vec2 vTexCoord;
 void main() {
-  vTexCoord.s = aVertexPosition.x + 0.5;
-  vTexCoord.t = aVertexPosition.y + 0.5;
+  
+  x = aVertexPosition; //vertex position
+  n = normalize(uNormalMatrix*aVertexNormal); // vertex normal
+  l = normalize(uNormalMatrix*vec3(1.0,0.25,0.0));
+  vec4 p = uModelViewMatrix*vec4(aVertexPosition, 1.0); // model view 
+  v = normalize(-p.xyz); //surfaceWorldPosition
 
   gl_Position = uProjectionMatrix*uModelViewMatrix*vec4(aVertexPosition, 1.0);
+  
+  //lighting setup
+  v_surfaceToLight = u_lightWorldPosition - v;
+  v_surfaceToView = u_viewWorldPosition - v;
 }
 `;
 
@@ -48,24 +62,65 @@ void main() {
 //
 
 var fs = `#version 300 es
-
 precision mediump float;
     
 in vec3 vNormal;
 in vec2 vTexCoord;
+
 uniform sampler2D uSampler;
 uniform sampler2D uSampler2;
+uniform vec3 uAmbient_Color;
+
+in vec3 v_surfaceToLight;
+in vec3 v_surfaceToView;
+in vec3 n,l,v,x;
 
 out vec4 outColor;
-    
-void main() {
-  vec3 illinois = vec3(texture(uSampler, vTexCoord));
-  vec3 stadium = vec3(texture(uSampler2, vTexCoord));
-  vec3 c = 0.5*illinois + 0.5*stadium;
 
-  outColor = vec4(c,1.0);
+void main() {
+  vec3 nx = normalize(n); 
+  vec3 lx = normalize(l);
+  vec3 vx = normalize(v);
+  vec3 r = reflect((-lx), nx);
+  
+  //lighting
+  vec3 surfaceToLightDirection = normalize(v_surfaceToLight);
+  vec3 surfaceToViewDirection = normalize(v_surfaceToView);
+  vec3 halfVector = normalize(surfaceToLightDirection + surfaceToViewDirection);
+  
+  
+  
+  float light = dot(nx, surfaceToLightDirection);
+  float specular = pow(dot(nx, halfVector), 300.0);
+  vec3 color = vec3(.5,.5,.5);  
+  color *= light;
+  //color += specular;
+  
+  //per-pixel-shading
+  float nDotL = max(dot(nx,lx), 0.0);
+  float nDotX = max(dot(vx,r), 0.0);
+
+  float uDiff = max(0.0, nDotL) * (0.50); // lambertian model
+  float uSpec = pow(max(0.0, nDotX), 10.0) * (0.50); //phong model
+  
+  //cylindrical mapping for illini logo
+  float s = atan(x.z,x.x)/(2.0 * -3.14159265359);
+  float t = (x.y + 0.25) / 0.5; 
+  vec2 illiniMap = vec2(s,t);
+  vec3 illinois = vec3(texture(uSampler, illiniMap));
+
+  //environment map for specular reflectance
+  vec2 reflectionMap;
+  reflectionMap.s = (nx.x + 1.0) / 2.0;
+  reflectionMap.t = (nx.y + 1.0) / 2.0;
+  vec3 stadium = vec3(texture(uSampler2, reflectionMap));
+  
+  vec3 c =0.5*illinois + 0.5*stadium;
+  vec3 light_col = color * ((uDiff)+ specular) + ((uSpec)+ specular) + c;
+  outColor = vec4(light_col * c.rgb,1.0);
 }
 `;
+
 
 
 
@@ -153,7 +208,7 @@ function initwebgl() {
                 gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
 
   var image = new Image();
-  image.src = "illinois512.png";
+  image.src = "illinois512-noborder.png";
 
   image.addEventListener("load", function() {
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -233,7 +288,9 @@ function loadshaders(vertexShaderSource,fragmentShaderSource) {
   normal_uniform = gl.getUniformLocation(shaderProgram, "uNormalMatrix"); 
   projection_uniform = gl.getUniformLocation(shaderProgram, "uProjectionMatrix"); 
   sampler_uniform = gl.getUniformLocation(shaderProgram, "uSampler"); 
-  sampler2_uniform = gl.getUniformLocation(shaderProgram, "uSampler2"); 
+  sampler2_uniform = gl.getUniformLocation(shaderProgram, "uSampler2");
+  lightWorldPosition = gl.getUniformLocation(shaderProgram, "u_lightWorldPosition");
+  viewWorldPosition = gl.getUniformLocation(shaderProgram, "u_viewWorldPosition");  
 }
 
 //
@@ -259,7 +316,9 @@ function draw(time) {
   gl.uniformMatrix4fv(modelview_uniform, false, modelview);
   gl.uniformMatrix3fv(normal_uniform, false, normalmatrix);
   gl.uniformMatrix4fv(projection_uniform, false, projection);
-
+  gl.uniform3fv(lightWorldPosition, [-1, 20, 60]);
+  gl.uniform3fv(viewWorldPosition, [-1, 20, 60]);
+  
   gl.uniform1i(sampler_uniform,0);
   gl.uniform1i(sampler2_uniform,1);
 
